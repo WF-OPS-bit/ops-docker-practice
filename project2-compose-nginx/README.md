@@ -170,7 +170,11 @@ Cache-Control: public, immutable
 验证结束。
 ```
 
-五项全部 PASS。终端截图见 [`docs/images/`](../../docs/images/)。
+五项全部 PASS。
+
+![服务状态与五项验证输出](../docs/images/01-compose-ps-and-check-sh-pass.png)
+
+> 截图为实机终端原始记录：上半部分是 `docker compose ps`（四个服务 healthy，`nginx` 无 healthcheck 故仅显示 `Up`），下半部分是 `bash scripts/check.sh` 的五项验证结果。
 
 下面按项拆开说明，每一条在验证什么、以及等价的手工命令。
 
