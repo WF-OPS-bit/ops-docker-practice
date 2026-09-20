@@ -307,6 +307,71 @@ MySQL 8.0.22 起，`SHOW SLAVE STATUS` / `START SLAVE` 改叫 `SHOW REPLICA STAT
 
 **用错术语会直接报错**，而网上大量教程用的还是老写法。看文档时务必确认版本。
 
+### 7.6 配置文件权限 777 会被 MySQL 静默忽略
+
+在从 Windows 打包、传到 Linux 解压的场景下会遇到：
+
+```
+mysql: [Warning] World-writable config file '/etc/mysql/conf.d/master.cnf' is ignored.
+```
+
+Windows 的 `tar` 不保存 Unix 权限位，解压出来的文件是 `777`。**MySQL 出于安全考虑会拒绝加载"全局可写"的配置文件**——注意它只是打一行 Warning，然后继续正常启动。
+
+后果是配置文件里**所有内容都不生效**（不只是报错的那一项）。本项目里表现为：
+
+```
+ERROR 1777 (HY000): CHANGE REPLICATION SOURCE TO SOURCE_AUTO_POSITION = 1
+cannot be executed because @@GLOBAL.GTID_MODE = OFF
+```
+
+因为 `gtid_mode=ON` 没被加载，而 `server_id`、`read_only` 其实也全都没生效——三个实例 server-id 都是默认的 1。排查时很容易盯着 GTID 配置看，意识不到是**整个文件被忽略**了。
+
+修法：
+
+```bash
+chmod 644 mysql/*.cnf
+docker compose restart mysql-master mysql-slave1 mysql-slave2
+```
+
+打包侧的根治办法是显式指定权限（`tar --mode`，或用 Python `tarfile` 逐个设 `ti.mode`），本仓库的分发包已按"目录 755 / `.sh` 755 / 其余 644"规范化。
+
+> 顺带一提：**Nginx、Redis 都不做这项检查**，所以这个坑只会在 MySQL 上暴露出来。
+
+### 7.7 compose 的 command 用字符串形式会被二次分词
+
+哨兵最初写成：
+
+```yaml
+command: >
+  sh -c "cp /usr/local/etc/redis/sentinel.conf /tmp/sentinel.conf
+         && echo '...' >> /tmp/sentinel.conf
+         && redis-sentinel /tmp/sentinel.conf"
+```
+
+容器日志直接刷屏：
+
+```
+sh: syntax error: unexpected "&&"
+```
+
+YAML 的 `>` 本身会把三行折成单行，这一步是对的；但 compose 对**字符串形式**的 `command` 还会再按 shell 规则做一次分词，`&&` 和嵌套引号就在这一步被拆散了。
+
+有意思的是，同一份文件里 `redis-server` 那条 command 用的是同样写法却**能正常工作**——因为它那行只有空格分隔的参数，没有 `&&` 和引号嵌套。**同一个写法、有的能跑有的不能跑**，正是这类问题难查的原因。
+
+改用数组形式，让 `sh -c` 收到完整脚本，不做二次解析：
+
+```yaml
+command:
+  - sh
+  - -c
+  - |
+    cp /usr/local/etc/redis/sentinel.conf /tmp/sentinel.conf
+    echo "sentinel auth-pass mymaster ${REDIS_PASSWORD}" >> /tmp/sentinel.conf
+    exec redis-sentinel /tmp/sentinel.conf
+```
+
+多行脚本用 `|` 块保留换行，三行各自独立，连 `&&` 都不需要。
+
 ---
 
 ## 8. 已知局限

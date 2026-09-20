@@ -56,10 +56,16 @@ services:
     image: redis:7-alpine
     # 密码不写进 conf 文件 —— Redis 不解析 ${} 变量，会把它当字面量。
     # 这里用启动参数传入，配置文件因此保持无密钥状态，可以安全提交
-    command: >
-      sh -c "redis-server /usr/local/etc/redis/redis.conf
-             --requirepass ${REDIS_PASSWORD}
-             --masterauth ${REDIS_PASSWORD}"
+    # 用数组形式而不是单行字符串：compose 会对字符串形式的 command 再做一次
+    # shell 分词，一旦脚本里出现 &&、引号嵌套就容易被拆散。
+    # 数组形式下 sh -c 收到的是完整脚本，不会被二次解析。
+    command:
+      - sh
+      - -c
+      - >
+        redis-server /usr/local/etc/redis/redis.conf
+        --requirepass "${REDIS_PASSWORD}"
+        --masterauth "${REDIS_PASSWORD}"
     volumes:
       - ./redis/redis-master.conf:/usr/local/etc/redis/redis.conf:ro
       - redis_master_data:/data
@@ -74,10 +80,16 @@ services:
 
   redis-slave1: &redis_slave
     image: redis:7-alpine
-    command: >
-      sh -c "redis-server /usr/local/etc/redis/redis.conf
-             --requirepass ${REDIS_PASSWORD}
-             --masterauth ${REDIS_PASSWORD}"
+    # 用数组形式而不是单行字符串：compose 会对字符串形式的 command 再做一次
+    # shell 分词，一旦脚本里出现 &&、引号嵌套就容易被拆散。
+    # 数组形式下 sh -c 收到的是完整脚本，不会被二次解析。
+    command:
+      - sh
+      - -c
+      - >
+        redis-server /usr/local/etc/redis/redis.conf
+        --requirepass "${REDIS_PASSWORD}"
+        --masterauth "${REDIS_PASSWORD}"
     volumes:
       - ./redis/redis-slave.conf:/usr/local/etc/redis/redis.conf:ro
       - redis_slave1_data:/data
@@ -99,10 +111,15 @@ services:
   # 这样每个哨兵各有一份独立副本，仓库里的模板永远不会被写脏。
   redis-sentinel1: &sentinel
     image: redis:7-alpine
-    command: >
-      sh -c "cp /usr/local/etc/redis/sentinel.conf /tmp/sentinel.conf
-             && echo 'sentinel auth-pass mymaster ${REDIS_PASSWORD}' >> /tmp/sentinel.conf
-             && redis-sentinel /tmp/sentinel.conf"
+    # 同样用数组形式。脚本用 | 块保留换行，三行各自独立，
+    # 不需要 && 连接 —— 少一层 shell 语法就少一个出错点
+    command:
+      - sh
+      - -c
+      - |
+        cp /usr/local/etc/redis/sentinel.conf /tmp/sentinel.conf
+        echo "sentinel auth-pass mymaster ${REDIS_PASSWORD}" >> /tmp/sentinel.conf
+        exec redis-sentinel /tmp/sentinel.conf
     volumes:
       - ./redis/sentinel.conf:/usr/local/etc/redis/sentinel.conf:ro
     depends_on:
