@@ -320,6 +320,20 @@ $ docker compose exec -T redis-sentinel1 redis-cli -p 26379 sentinel get-master-
 
 **从 `+sdown` 到 `+switch-master` 用时 2.2 秒。** 三个哨兵都参与了投票，quorum 2/2 达成，原主恢复后正确降级为从库、没有抢回主角色。
 
+### 终端截图
+
+三哨兵集群就绪与拓扑（三个哨兵认定的主节点一致，`num-other-sentinels = 2`）：
+
+![哨兵集群就绪与拓扑](../docs/images/02-project3-sentinels-and-topology.png)
+
+故障转移前后的主节点地址对比（`172.22.0.5` → `172.22.0.10`）：
+
+![故障转移前后主节点地址对比](../docs/images/03-project3-failover-before-after.png)
+
+哨兵完整故障转移日志（含 `+sdown` / `+odown #quorum 2/2` / `+promoted-slave` / `+switch-master`）：
+
+![哨兵故障转移完整日志](../docs/images/04-project3-failover-log.png)
+
 ---
 
 ## 7. 踩坑记录
