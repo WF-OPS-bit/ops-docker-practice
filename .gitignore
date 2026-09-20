@@ -1,0 +1,23 @@
+# ---- 敏感信息：.env 绝对不能提交 ----
+.env
+*.env
+!.env.example
+
+# ---- 构建产物与大文件 ----
+*.jar
+*.war
+*.tar.gz
+*.zip
+target/
+
+# ---- 数据目录（几百 MB，不是源码） ----
+**/mysql_data/
+**/redis_data/
+**/logs/
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db

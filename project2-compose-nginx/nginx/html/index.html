@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Project2 - Nginx + Docker Compose</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="box">
+    <h1>Project 2：Nginx + Docker Compose 集群</h1>
+    <p>这个页面由 Nginx 直接返回（静态资源），下面的接口由后端两个实例处理。</p>
+    <ul>
+      <li><code>/api/hi</code> &mdash; 返回命中的实例，用于验证加权负载均衡</li>
+      <li><code>/api/cache-time</code> &mdash; 开启 proxy_cache，用于验证 Nginx 代理缓存</li>
+      <li><code>/api/db</code> &mdash; 返回 MySQL 版本与当前时间</li>
+      <li><code>/api/redis</code> &mdash; Redis 累加计数器，两实例共享</li>
+    </ul>
+  </div>
+</body>
+</html>

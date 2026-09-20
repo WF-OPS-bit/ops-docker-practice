@@ -1,0 +1,31 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: ops-demo
+  datasource:
+    url: "${SPRING_DATASOURCE_URL:jdbc:mysql://mysql:3306/appdb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}"
+    username: "${SPRING_DATASOURCE_USERNAME:app}"
+    password: "${SPRING_DATASOURCE_PASSWORD:ChangeMe_App_123}"
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 30000
+  data:
+    redis:
+      host: "${SPRING_REDIS_HOST:redis}"
+      port: "${SPRING_REDIS_PORT:6379}"
+      password: "${SPRING_REDIS_PASSWORD:ChangeMe_Redis_123}"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true

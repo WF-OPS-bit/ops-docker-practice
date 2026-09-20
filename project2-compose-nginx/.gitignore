@@ -1,0 +1,8 @@
+# 本目录下的 .env 同样不提交
+.env
+*.env
+!.env.example
+
+# Maven 构建产物
+target/
+*.jar
