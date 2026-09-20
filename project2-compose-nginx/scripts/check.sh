@@ -10,13 +10,20 @@ head1() { echo; echo "===== $* ====="; }
 
 # ---------- 验证 1：加权负载均衡 ----------
 head1 "验证 1：加权负载均衡（weight=2:1，期望约 4:2）"
-echo "  连续请求 6 次 /api/hi："
-counts=$(for i in $(seq 1 6); do
+echo "  连续请求 6 次 /api/hi，统计命中的实例："
+# 注意两个坑：
+#   1) Spring Boot 的响应体末尾没有换行符
+#   2) GNU sed 处理"最后一行无换行"的输入时，输出也不补换行
+# 所以必须在每次提取后自己补一个 echo，否则 6 次结果会拼成一整串，
+# uniq -c 只会统计到 1 行，明明打到了两个实例也会误判成 FAIL。
+counts=$(for _ in $(seq 1 6); do
   curl -s http://localhost/api/hi | sed -n 's/.*"instance":"\([^"]*\)".*/\1/p'
+  echo
 done)
-echo "$counts" | sort | uniq -c
-if [ "$(echo "$counts" | sort -u | wc -l)" -ge 2 ]; then
-  ok "两个实例都被打到"
+echo "$counts" | sed '/^$/d' | sort | uniq -c | sed 's/^/    /'
+distinct=$(echo "$counts" | sed '/^$/d' | sort -u | wc -l)
+if [ "$distinct" -ge 2 ]; then
+  ok "两个实例都被打到（权重 2:1 时 web1 应明显多于 web2）"
 else
   bad "只命中了一个实例 —— 检查 Nginx upstream 和容器网络"
 fi

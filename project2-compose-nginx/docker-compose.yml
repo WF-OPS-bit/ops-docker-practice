@@ -16,7 +16,12 @@ services:
 
   # YAML 锚点：web1 的完整定义复用给 web2，两个实例配置完全一致
   web1: &web
-    build: ./app
+    build:
+      context: ./app
+      # 构建时用宿主机网络：容器内的 resolv.conf 是 dockerd 生成的，宿主机 resolv.conf
+      # 只有 127.0.0.1 时 Docker 会回退到 8.8.8.8，国内解析不了 → maven 下载全部失败。
+      # 走 host 网络后构建阶段直接复用宿主机的 DNS，不依赖 daemon.json 配置。
+      network: host
     environment:
       SPRING_PROFILES_ACTIVE: prod
       SPRING_DATASOURCE_URL: "jdbc:mysql://mysql:3306/${MYSQL_DATABASE}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai"

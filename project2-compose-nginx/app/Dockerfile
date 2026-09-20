@@ -1,8 +1,14 @@
 # ---------- 构建阶段：Maven + JDK17，最终不会被打进运行镜像 ----------
 FROM maven:3.9-eclipse-temurin-17 AS build
+
+# 先把 Maven 镜像源配好再动依赖：容器内直连 repo.maven.apache.org 在国内会超时或
+# 直接 DNS 解析失败（Temporary failure in name resolution / Could not transfer artifact）。
+# 这一层内容几乎不变，放在最前面可以稳定命中构建缓存。
+COPY maven-settings.xml /root/.m2/settings.xml
+
 WORKDIR /build
 
-# 先只拷 pom.xml 单独一层：改业务代码时这一层命中缓存，不会重新下载依赖
+# 再只拷 pom.xml 单独一层：改业务代码时这一层命中缓存，不会重新下载依赖
 COPY pom.xml .
 RUN mvn -B dependency:go-offline
 

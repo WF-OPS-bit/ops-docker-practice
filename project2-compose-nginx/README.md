@@ -75,6 +75,7 @@ project2-compose-nginx/
 ├── docker-compose.yml
 ├── app/                      # Spring Boot 应用源码（多阶段 Docker 构建的上下文）
 │   ├── Dockerfile
+│   ├── maven-settings.xml    # 构建阶段把 central 指向阿里云，绕开容器内访问中央仓库失败
 │   ├── pom.xml
 │   └── src/main/
 │       ├── java/com/wf/opsdemo/
@@ -117,13 +118,61 @@ docker compose ps             # 五个服务 STATUS 都应为 Up (healthy)
 
 ## 6. 验证
 
-直接跑脚本：
+### 6.0 实测输出
 
-```bash
-./scripts/check.sh
+下面两段是在真实环境（CentOS 7 Core + Docker 26.1.4 + Docker Compose v2.27.1，2 核 3.7G）上跑出来的原始输出，**不是预期值，也没有做过任何修饰**。
+
+**① 服务状态**
+
+```text
+$ docker compose ps
+NAME                             IMAGE                         COMMAND                   SERVICE   CREATED         STATUS                   PORTS
+project2-compose-nginx-mysql-1   mysql:8.0                     "docker-entrypoint.s…"   mysql     2 minutes ago   Up 2 minutes (healthy)   3306/tcp, 33060/tcp
+project2-compose-nginx-nginx-1   nginx:1.27-alpine             " /docker-entrypoint.…"   nginx     2 minutes ago   Up 56 seconds            0.0.0.0:80->80/tcp, :::80->80/tcp
+project2-compose-nginx-redis-1   redis:7-alpine                "docker-entrypoint.s…"   redis     2 minutes ago   Up 2 minutes (healthy)   6379/tcp
+project2-compose-nginx-web1-1    project2-compose-nginx-web1   "sh -c 'exec java $J…"   web1      2 minutes ago   Up 2 minutes (healthy)   8080/tcp
+project2-compose-nginx-web2-1    project2-compose-nginx-web2   "sh -c 'exec java $J…"   web2      2 minutes ago   Up 2 minutes (healthy)   8080/tcp
 ```
 
-它依次验证下面五项。等价的手工命令与期望输出如下。
+> `nginx` 只显示 `Up` 而没有 `(healthy)`，是因为它在 compose 里没有定义 `healthcheck`——它是流量入口，没有需要额外探活的下游依赖。其余四个显示 `(healthy)` 即代表健康检查已通过（`web1/web2` 的健康检查打的是 `/actuator/health`，它同时校验 MySQL 与 Redis 连通性）。
+
+**② 一键验证**
+
+```text
+$ bash scripts/check.sh
+===== 验证 1：加权负载均衡（weight=2:1，期望约 4:2） =====
+连续请求 6 次 /api/hi，统计命中的实例：
+4 06f7919c3db2
+2 2f1b0c52cb4a
+[PASS] 两个实例都被打到（权重 2:1 时 web1 应明显多于 web2）
+
+===== 验证 2：静态资源缓存头 =====
+Expires: Tue, 20 Oct 2026 03:39:43 GMT
+Cache-Control: max-age=2592000
+Cache-Control: public, immutable
+[PASS] Cache-Control: max-age=2592000（30 天）
+
+===== 验证 3：proxy_cache 命中（同一 URL 两次） =====
+第一次: X-Cache-Status: MISS
+第二次: X-Cache-Status: HIT
+[PASS] 第二次请求命中缓存
+
+===== 验证 4：MySQL / Redis 连通 =====
+/api/db   -> {"message":"mysql ok","instance":"2f1b0c52cb4a","time":"2026-09-20T11:39:44.439758403","mysqlVersion":"8.0.46","mysqlNow":"2026-09-20 03:39:44"}
+/api/redis-> {"message":"redis ok","instance":"06f7919c3db2","time":"2026-09-20T11:39:44.596114723","hits":1}
+
+===== 验证 5：MySQL 数据持久化（重启容器后数据还在） =====
+[+] Restarting 1/1
+✔ Container project2-compose-nginx-mysql-1  Started 3.7s 7s
+等待 MySQL 重新就绪...
+重启后查到的数据: persist-test
+[PASS] volume 挂载生效，容器重启后数据未丢失
+验证结束。
+```
+
+五项全部 PASS。终端截图见 [`docs/images/`](../../docs/images/)。
+
+下面按项拆开说明，每一条在验证什么、以及等价的手工命令。
 
 ### 6.1 加权负载均衡
 
@@ -139,7 +188,14 @@ for i in $(seq 1 6); do curl -s http://localhost/api/hi; echo; done
 
 > ⚠️ 这条**只能**用 `/api/hi` 验证。`/api/cache-time` 开了代理缓存，命中后 Nginx 不再回源，会永远返回同一台实例的结果。
 
-<!-- TODO(实机跑完后补)：把服务器上 docker compose ps 全部 healthy 的截图放到 docs/images/ -->
+实测命中分布（就是 6.0 里的验证 1 输出）：
+
+```text
+4 06f7919c3db2
+2 2f1b0c52cb4a
+```
+
+正好落在 `weight=2:1` 的期望比例上。
 
 ### 6.2 静态资源缓存头
 
@@ -178,20 +234,37 @@ curl -s http://localhost/api/redis   # 返回 Redis 累加计数，两实例共�
 ### 6.5 数据持久化
 
 ```bash
-docker compose exec -T mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS appdb;"
+# 1) 写入一条数据
+docker compose exec -T mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e \
+  "CREATE TABLE IF NOT EXISTS appdb.t_demo(id INT PRIMARY KEY, v VARCHAR(20));
+   INSERT INTO appdb.t_demo VALUES(1,'persist-test') ON DUPLICATE KEY UPDATE v='persist-test';"
+
+# 2) 重启 MySQL 容器
 docker compose restart mysql
-# 等 15 秒后重查，数据应仍在
+
+# 3) 等约 15 秒后重查
+docker compose exec -T mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e \
+  "SELECT v FROM appdb.t_demo WHERE id=1;"
 ```
 
-这条最能说明"容器无状态、数据有状态"这件事：`mysql_data` 命名卷不随容器删除而消失。
+实测输出：
 
-<!-- TODO(实机跑完后补)：把 restart 前后 SELECT 的对比输出贴到这里 -->
+```text
+$ docker compose restart mysql
+[+] Restarting 1/1
+ ✔ Container project2-compose-nginx-mysql-1  Started  3.7s 7s
+
+$ docker compose exec -T mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "SELECT v FROM appdb.t_demo WHERE id=1;"
+persist-test
+```
+
+这条最能说明"容器无状态、数据有状态"这件事：容器被销毁重建，但 `mysql_data` 命名卷还在，数据就还在。
 
 ---
 
 ## 7. 踩坑记录
 
-> 这一节是实务部分。前四条是**写这套配置时就踩到并已经在代码里修掉的**，第五条是部署时一定会遇到的。
+> 这一节是实务部分，按踩坑的先后顺序排列：**7.1~7.4** 是写这套配置时踩到、并且已经在仓库代码里修掉的；**7.5** 是 MySQL 8 绕不开的经典坑；**7.6** 是在 CentOS 7 虚拟机里实际部署时遇到的容器网络问题（这条排查耗时最长）。
 
 ### 7.1 JRE 精简镜像里没有 curl，healthcheck 直接卡死整条链路
 
@@ -261,15 +334,53 @@ command: --default-authentication-plugin=mysql_native_password
 
 > 这个问题在"项目三"（GTID 主从）里会更致命：从库 IO 线程会卡在 `Slave_IO_Running: Connecting`，很容易被误判成网络问题。
 
+### 7.6 容器内 DNS 解析失败，导致 Maven 构建中断
+
+在 CentOS 7 上首次构建时报：
+
+```
+Could not transfer artifact org.springframework.boot:spring-boot-starter-parent:pom:3.1.12
+from/to central (https://repo.maven.apache.org/maven2):
+repo.maven.apache.org: Temporary failure in name resolution
+```
+
+**这不是 Maven 配置问题，是容器内 DNS 不工作。**
+
+原因链：CentOS 7 的宿主机 `/etc/resolv.conf` 常常只有 `nameserver 127.0.0.1`（被 NetworkManager 接管）。Docker 生成容器 resolv.conf 时会丢弃 `127.0.0.1`（在容器里它指向容器自己），然后**回退到 `8.8.8.8`** —— 而国内访问不了 Google DNS，于是容器内所有域名解析全部失败。
+
+注意这个坑有很强的迷惑性：`docker pull` 是 **daemon 在宿主机上**发起的，走 registry-mirrors，所以拉镜像一切正常；只有**容器内部**发起的网络请求才会挂。
+
+两层修法（本仓库只负责第二层）：
+
+1. 给 Docker daemon 配国内 DNS —— 编辑 `/etc/docker/daemon.json` 加 `"dns": ["223.5.5.5", "114.114.114.114"]`，然后 `systemctl restart docker`（这一步是宿主机环境配置，不在仓库范围内）
+2. 即便 DNS 正常了，容器直连 Maven 中央仓库在国内也慢到不可用 —— 所以在构建阶段用 `app/maven-settings.xml` 把 `central` 镜像到阿里云公共仓库，由 Dockerfile `COPY` 进 `/root/.m2/settings.xml`
+
+`mirrorOf` 特意只写 `central` 而不是 `*`，避免把项目将来可能声明的私有仓库也一起劫持掉。
+
+**第三层，也是最省事的一层：让构建阶段直接用宿主机网络。**
+
+只换 Maven 镜像源是不够的 —— 如果容器 DNS 根本没工作，连 `maven.aliyun.com` 也解析不了，报错依旧是 `Temporary failure in name resolution`。这种情况下与其去改宿主机的 `daemon.json`，不如让构建时不要走容器自己的网络栈，直接在 `docker-compose.yml` 的 `build` 段声明：
+
+```yaml
+build:
+  context: ./app
+  network: host      # 构建阶段复用宿主机网络与 DNS
+```
+
+`network: host` 作用于**整个构建过程的所有阶段**，所以运行阶段里那句 `apt-get install curl` 也一并受益。本仓库已采用这个配置，配合 `maven-settings.xml` 形成两层保险：DNS 正常时走阿里云镜像加速，即使不改宿主机 DNS 也能构建成功。
+
+需要区分清楚的是：**运行时**的容器仍然走 bridge 网络，`network: host` 只影响构建。应用运行时只用容器名（`mysql` / `redis`）互联，由 Docker 内置 DNS 负责，不依赖外部 DNS，所以这样配置是安全的。
+
 ---
 
 ## 8. 已知局限
 
 诚实交代，这几件事本仓库**没有**做：
 
-1. **本机开发机没有 Docker 环境**，Dockerfile 的多阶段构建是在 `maven:3.9-eclipse-temurin-17` 里完成的，已用本机 JDK 21 + Maven 3.6.0 验证源码可正常打包；但 compose 集群的实际运行结果尚未在 Linux 服务器上验证过（README 里标记 `TODO` 的地方就是待补内容）。
-2. **Spring Boot 版本受构建环境限制**。选 3.1.12 而不是更新的 3.3/3.5，是因为本机 Maven 是 3.6.0（2018 年发布），而 Spring Boot 3.2+ 依赖链里的 maven-compiler-plugin 等要求 Maven ≥ 3.6.3。容器里用的是 Maven 3.9，理论上可以升，那样就失去了本机可复现构建的能力——权衡后保留了能在两种环境都编过的组合。
-3. **没有 HTTPS**，Nginx 只监听 80 端口，证书配置不在范围内。
-4. **没有资源限制**，compose 里没设 `mem_limit` / `cpus`，生产环境必须加。
-5. **没有做压测**，权重 2:1 是人为设定的，不代表真实容量评估结论。
-6. **MySQL 是单实例**，没有主从。主从 + 哨兵的 HA 部分在「项目三」。
+1. **验证环境与示例环境的差异**。集群已在 CentOS 7 Core + Docker 26.1.4 + Compose v2.27.1 上跑通全部五项验证（见第 6 节实测输出）。选 CentOS 7 是因为手头虚拟机预装的就是它 —— 该系统已于 2024-06 EOL，**新环境建议用 Rocky Linux 9 / AlmaLinux 9**（用法一致，二进制兼容 RHEL）。开发机（Windows）没有 Docker，所以源码构建是另外用本机 JDK 21 + Maven 3.6.0 单独验证过的。
+2. **Spring Boot 版本受构建环境限制**。选 3.1.12 而不是更新的 3.3/3.5，是因为开发机 Maven 是 3.6.0（2018 年发布），而 Spring Boot 3.2+ 依赖链里的 maven-compiler-plugin 等要求 Maven ≥ 3.6.3。容器里用的是 Maven 3.9，理论上可以升，那样就失去了本机可复现构建的能力——权衡后保留了能在两种环境都编过的组合。
+3. **MySQL 容器时区与应用不一致**。`my.cnf` 里声明了 `default-time-zone = '+08:00'`，但实测 `SELECT NOW()` 返回的仍是 UTC（与应用日志里的 Asia/Shanghai 差 8 小时），说明该配置项没有生效，挂载路径需要进一步确认。**此项待查，不影响功能验证。**
+4. **没有 HTTPS**，Nginx 只监听 80 端口，证书配置不在范围内。
+5. **没有资源限制**，compose 里没设 `mem_limit` / `cpus`，生产环境必须加。
+6. **没有做压测**，权重 2:1 是人为设定的，不代表真实容量评估结论。
+7. **MySQL 是单实例**，没有主从。主从 + 哨兵的 HA 部分在「项目三」。

@@ -10,7 +10,7 @@
 
 | 目录 | 内容 | 状态 |
 |---|---|---|
-| [`project2-compose-nginx/`](project2-compose-nginx/) | Docker Compose 编排 Nginx + 双实例应用 + MySQL + Redis，含动静分离、两级缓存、数据持久化验证 | ✅ 配置完成 |
+| [`project2-compose-nginx/`](project2-compose-nginx/) | Docker Compose 编排 Nginx + 双实例应用 + MySQL + Redis，含动静分离、两级缓存、数据持久化验证 | ✅ **已实机验证** |
 | `project3-mysql-redis-ha/` | MySQL GTID 一主两从 + Redis 一主两从三哨兵 | ⏳ 待补充 |
 | `docs/images/` | 终端验证截图 | ⏳ 待补充 |
 
@@ -72,23 +72,27 @@ cp .env.example .env && vim .env   # 改掉三组默认密码
 
 | 组件 | 版本 |
 |---|---|
-| OS | Rocky Linux 9 / CentOS Stream 9 |
-| Docker Engine | 27.x |
-| Docker Compose | v2.x（命令是 `docker compose`，不是 `docker-compose`） |
+| OS | **CentOS 7 Core**（实际验证环境，2 核 / 3.7G） |
+| Docker Engine | **26.1.4** |
+| Docker Compose | **v2.27.1**（命令是 `docker compose`，不是 `docker-compose`） |
 | Spring Boot | 3.1.12 |
 | JDK | Eclipse Temurin 17 |
-| MySQL | 8.0 |
+| MySQL | 8.0.46 |
 | Redis | 7-alpine |
 
-> 服务器系统准备、Docker 安装、镜像加速配置不在本仓库范围内，见配套的实施文档。
+> CentOS 7 已于 2024-06 EOL，这里是沿用现有虚拟机。**换新环境建议用 Rocky Linux 9 / AlmaLinux 9**——用法几乎一致，二进制兼容 RHEL，也不会被问"怎么还在用 EOL 系统"。
+>
+> 服务器系统准备、Docker 安装、镜像加速配置不在本仓库范围内。
 
 ---
 
-## 关于验证状态的一点说明
+## 关于验证状态
 
-这套配置中，**应用层源码已在 JDK 21 + Maven 3.6.0 下完整构建通过**（产出 `target/app.jar`）。
+**项目二已在实机跑通全部五项验证**（负载均衡 / 两层缓存 / 数据层连通 / 卷持久化），原始终端输出见 [项目二 README 第 6.0 节](project2-compose-nginx/README.md#60-实测输出)。
 
-Docker Compose 集群部分需要在 Linux 服务器上实机运行才能拿到真实输出，README 里标记 `TODO` 的位置就是待补充的验证结果和截图。**仓库里没有写任何未经实际运行验证的结论。**
+应用层源码另外在 Windows（JDK 21 + Maven 3.6.0）下独立构建通过，产出 `target/app.jar`。
+
+README 中所有标注为"实测输出"的内容都来自真实运行，**没有写任何未经实际验证的结论**；尚未完成的部分统一列在各自的「已知局限」中。
 
 ---
 
