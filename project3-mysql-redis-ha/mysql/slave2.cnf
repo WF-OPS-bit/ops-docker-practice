@@ -1,0 +1,20 @@
+[mysqld]
+# ---- 复制标识：master=1, slave1=2, slave2=3，三者互不相同 ----
+server-id            = 3
+
+log-bin              = mysql-bin
+binlog_format        = ROW
+relay-log            = relay-bin
+
+gtid_mode                     = ON
+enforce_gtid_consistency      = ON
+log_slave_updates             = ON
+
+read_only            = ON
+
+character-set-server = utf8mb4
+collation-server     = utf8mb4_0900_ai_ci
+default-time-zone    = '+08:00'
+
+innodb_buffer_pool_size = 64M
+max_connections      = 100

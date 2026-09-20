@@ -1,0 +1,29 @@
+[mysqld]
+# ---- 复制标识：集群内绝对不能重复 ----
+server-id            = 1
+
+# ---- binlog：主库必须开，从库靠它做复制 ----
+log-bin              = mysql-bin
+binlog_format        = ROW
+relay-log            = relay-bin
+
+# ---- GTID 模式 ----
+# gtid_mode=ON 后每个事务有全局唯一 ID，从库用 SOURCE_AUTO_POSITION=1 就能自动定位同步点，
+# 不用再手工记录 binlog 文件名和偏移量（那是老式复制最容易出错的地方）
+gtid_mode                     = ON
+enforce_gtid_consistency      = ON
+log_slave_updates             = ON
+
+# ---- 持久化：双 1 配置，主库宕机不丢已提交事务 ----
+innodb_flush_log_at_trx_commit = 1
+sync_binlog                    = 1
+
+character-set-server = utf8mb4
+collation-server     = utf8mb4_0900_ai_ci
+default-time-zone    = '+08:00'
+
+# 三个 MySQL 实例跑在同一台 3.7G 内存的机器上，默认 128M 的 buffer pool 扛不住，
+# 压到 64M。练习环境数据量极小，对功能验证没有影响。
+innodb_buffer_pool_size = 64M
+
+max_connections      = 100

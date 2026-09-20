@@ -1,0 +1,126 @@
+services:
+  # ============================================================
+  #  MySQL 8：GTID 一主两从
+  # ============================================================
+  mysql-master:
+    image: mysql:8.0
+    # MySQL 8 默认认证插件是 caching_sha2_password，非加密连接下做复制会报
+    # "Authentication requires secure connection"，这里显式改回
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - ./mysql/master.cnf:/etc/mysql/conf.d/master.cnf:ro
+      - master_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+    networks: [ha_net]
+    restart: unless-stopped
+
+  # 从库定义用 YAML 锚点复用给 slave2，两者只差挂载的配置文件与数据卷
+  mysql-slave1: &mysql_slave
+    image: mysql:8.0
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - ./mysql/slave1.cnf:/etc/mysql/conf.d/slave.cnf:ro
+      - slave1_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+    depends_on:
+      mysql-master: { condition: service_healthy }
+    networks: [ha_net]
+    restart: unless-stopped
+
+  mysql-slave2:
+    <<: *mysql_slave
+    # server-id 写在各自的 cnf 里（slave1=2 / slave2=3），必须不同，
+    # 共用一个配置文件会导致复制直接失败
+    volumes:
+      - ./mysql/slave2.cnf:/etc/mysql/conf.d/slave.cnf:ro
+      - slave2_data:/var/lib/mysql
+
+  # ============================================================
+  #  Redis 7：一主两从
+  # ============================================================
+  redis-master:
+    image: redis:7-alpine
+    # 密码不写进 conf 文件 —— Redis 不解析 ${} 变量，会把它当字面量。
+    # 这里用启动参数传入，配置文件因此保持无密钥状态，可以安全提交
+    command: >
+      sh -c "redis-server /usr/local/etc/redis/redis.conf
+             --requirepass ${REDIS_PASSWORD}
+             --masterauth ${REDIS_PASSWORD}"
+    volumes:
+      - ./redis/redis-master.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis_master_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [ha_net]
+    restart: unless-stopped
+
+  redis-slave1: &redis_slave
+    image: redis:7-alpine
+    command: >
+      sh -c "redis-server /usr/local/etc/redis/redis.conf
+             --requirepass ${REDIS_PASSWORD}
+             --masterauth ${REDIS_PASSWORD}"
+    volumes:
+      - ./redis/redis-slave.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis_slave1_data:/data
+    depends_on:
+      redis-master: { condition: service_healthy }
+    networks: [ha_net]
+    restart: unless-stopped
+
+  redis-slave2:
+    <<: *redis_slave
+    volumes:
+      - ./redis/redis-slave.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis_slave2_data:/data
+
+  # ============================================================
+  #  Redis Sentinel：三节点
+  # ============================================================
+  # 启动流程：把只读模板复制到容器可写层的 /tmp -> 追加 auth-pass -> 启动。
+  # 这样每个哨兵各有一份独立副本，仓库里的模板永远不会被写脏。
+  redis-sentinel1: &sentinel
+    image: redis:7-alpine
+    command: >
+      sh -c "cp /usr/local/etc/redis/sentinel.conf /tmp/sentinel.conf
+             && echo 'sentinel auth-pass mymaster ${REDIS_PASSWORD}' >> /tmp/sentinel.conf
+             && redis-sentinel /tmp/sentinel.conf"
+    volumes:
+      - ./redis/sentinel.conf:/usr/local/etc/redis/sentinel.conf:ro
+    depends_on:
+      redis-master: { condition: service_healthy }
+    networks: [ha_net]
+    restart: unless-stopped
+
+  redis-sentinel2: { <<: *sentinel }
+  redis-sentinel3: { <<: *sentinel }
+
+volumes:
+  master_data:
+  slave1_data:
+  slave2_data:
+  redis_master_data:
+  redis_slave1_data:
+  redis_slave2_data:
+
+networks:
+  ha_net:
+    driver: bridge

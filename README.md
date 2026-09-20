@@ -11,7 +11,7 @@
 | 目录 | 内容 | 状态 |
 |---|---|---|
 | [`project2-compose-nginx/`](project2-compose-nginx/) | Docker Compose 编排 Nginx + 双实例应用 + MySQL + Redis，含动静分离、两级缓存、数据持久化验证 | ✅ **已实机验证** |
-| `project3-mysql-redis-ha/` | MySQL GTID 一主两从 + Redis 一主两从三哨兵 | ⏳ 待补充 |
+| [`project3-mysql-redis-ha/`](project3-mysql-redis-ha/) | MySQL GTID 一主两从 + Redis 一主两从三哨兵，含故障转移验证 | 🔧 配置完成，待实机验证 |
 | `docs/images/` | 终端验证截图 | ⏳ 待补充 |
 
 ---
