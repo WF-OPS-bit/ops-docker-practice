@@ -75,7 +75,12 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    networks: [ha_net]
+    # 固定 IP：Redis 7.4 + alpine(musl) 下 Sentinel 无法用容器名解析 master
+    # （报 Can't resolve instance hostname 后 FATAL 退出），所以给它一个静态地址，
+    # 哨兵配置里直接写这个 IP。见 README 踩坑 7.8
+    networks:
+      ha_net:
+        ipv4_address: 172.28.0.10
     restart: unless-stopped
 
   redis-slave1: &redis_slave
@@ -141,3 +146,9 @@ volumes:
 networks:
   ha_net:
     driver: bridge
+    # 固定网段，配合 redis-master 的 ipv4_address 使用。
+    # 若与你现有环境冲突，改成一个未被占用的 /16 段即可（同时改 sentinel.conf 里的地址）
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16

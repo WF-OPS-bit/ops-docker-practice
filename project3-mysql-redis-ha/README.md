@@ -150,16 +150,38 @@ bash scripts/init-replication.sh
 bash scripts/check-replication.sh
 ```
 
-期望两个从库都显示：
+实测输出（两个从库结果一致，已省略重复的 mysql 密码警告）：
 
-```
-Replica_IO_Running:  Yes
+```text
+$ bash scripts/init-replication.sh
+==> 1/3 在主库创建复制账号
+==> 2/3 配置 mysql-slave1：指向主库，启用 GTID 自动定位
+==> 2/3 配置 mysql-slave2：指向主库，启用 GTID 自动定位
+==> 3/3 等待复制链路建立
+
+----- mysql-slave1 -----
+Replica_IO_Running: Yes
 Replica_SQL_Running: Yes
-Retrieved_Gtid_Set:  <非空>
-Executed_Gtid_Set:   <非空>
+Seconds_Behind_Source: 0
+Last_IO_Error:
+Last_SQL_Error:
+Replica_SQL_Running_State: Replica has read all relay log; waiting for more updates
+Last_IO_Error_Timestamp:
+Last_SQL_Error_Timestamp:
+Retrieved_Gtid_Set: 36a22150-b4ba-11f1-b709-0242ac160002:1-3
+Executed_Gtid_Set: 36a22150-b4ba-11f1-b709-0242ac160002:1-3
+
+----- mysql-slave2 -----
+Replica_IO_Running: Yes
+Replica_SQL_Running: Yes
+Seconds_Behind_Source: 0
+Last_IO_Error:
+Last_SQL_Error:
+Retrieved_Gtid_Set: 36a22150-b4ba-11f1-b709-0242ac160002:1-3
+Executed_Gtid_Set: 36a22150-b4ba-11f1-b709-0242ac160002:1-3
 ```
 
-<!-- TODO(实机跑完后补)：把真实的 SHOW REPLICA STATUS 输出贴到这里 -->
+**判断依据**：`Replica_IO_Running` 与 `Replica_SQL_Running` 双 Yes，且 `Retrieved_Gtid_Set` 与 `Executed_Gtid_Set` 完全相同（说明收到的 GTID 已全部执行完，无积压）。两个从库看到的是同一个 UUID（`36a22150-...`），证明它们都从同一个主库复制。
 
 ### 6.2 数据同步
 
@@ -179,7 +201,22 @@ done
 
 两个从库都能查到 `hello-gtid` 即 GTID 复制通了。
 
-<!-- TODO(实机跑完后补)：贴主库写入 + 两个从库查询的完整输出 -->
+实测输出：
+
+```text
+# 主库写入（无输出即成功）
+$ docker compose exec -T mysql-master mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e \
+  "CREATE DATABASE IF NOT EXISTS ha_demo; ... INSERT INTO ha_demo.t VALUES(1,'hello-gtid') ..."
+mysql: [Warning] Using a password on the command line interface can be insecure.
+
+# 两个从库分别查询
+--- mysql-slave1 ---
+1       hello-gtid
+--- mysql-slave2 ---
+1       hello-gtid
+```
+
+主库写一条，两个从库都同步到了。
 
 ### 6.3 从库只读
 
@@ -188,7 +225,14 @@ docker compose exec -T mysql-slave1 mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e \
   "SELECT @@read_only, @@super_read_only;"
 ```
 
-期望 `read_only = 1`。注意 **root 有 SUPER 权限，仍然能写**——这是刻意保留的，方便验证；生产环境应再加 `super_read_only = ON`。
+实测输出：
+
+```text
+@@read_only     @@super_read_only
+1       0
+```
+
+`read_only = 1` 生效。注意 **root 有 SUPER 权限，仍然能写**（`super_read_only = 0`）——这是刻意保留的，方便验证；生产环境应再加 `super_read_only = ON`。
 
 ### 6.4 Redis 哨兵与故障转移
 
@@ -226,7 +270,55 @@ docker compose unpause redis-master
 
 恢复后原来的主节点会以**从节点**身份重新加入，不会抢占主角色。
 
-<!-- TODO(实机跑完后补)：贴 failover 前后 get-master-addr-by-name 的对比 + 哨兵日志关键行 -->
+### 实测输出
+
+> 说明：实测那次 Docker 分配的是 `172.22.0.0/16` 网段。改用固定网段后地址会变成 `172.28.0.x`，流程与结论完全一致。
+
+**切换前** —— 三个哨兵一致认定 `172.22.0.5` 为主节点：
+
+```text
+===== 1. 各哨兵认定的主节点 =====
+  [redis-sentinel1] 172.22.0.5 6379
+  [redis-sentinel2] 172.22.0.5 6379
+  [redis-sentinel3] 172.22.0.5 6379
+
+===== 3. 哨兵监控的主节点元数据 =====
+name    mymaster
+flags   master
+down-after-milliseconds 5000
+num-slaves      2
+num-other-sentinels     2      ← 三个哨兵互相发现
+quorum  2
+```
+
+**执行 `docker compose pause redis-master` 后**：
+
+```text
+$ docker compose exec -T redis-sentinel1 redis-cli -p 26379 sentinel get-master-addr-by-name mymaster
+172.22.0.10                    ← 主节点已切换
+6379
+```
+
+**哨兵日志（核心证据）**：
+
+```text
+06:52:52.652 # +sdown master mymaster 172.22.0.5 6379                    ← 主观下线
+06:52:52.708 # +odown master mymaster 172.22.0.5 6379 #quorum 2/2         ← 客观下线，2/2 票
+06:52:52.708 # +new-epoch 1
+06:52:52.710 # +vote-for-leader 06fce8bfd712a2e351d154c43fc54aa23fd22440 1
+06:52:52.720 * c04012f2631c9360774b1c1f29afb6484a1bd4cb voted for 06fce8bf... 1
+06:52:52.721 * 18281522fa0f5807e6e1fed8ea1b9ec40199cc73 voted for 06fce8bf... 1
+06:52:52.784 # +elected-leader master mymaster 172.22.0.5 6379
+06:52:52.856 # +selected-slave slave 172.22.0.10:6379                     ← 选出新主
+06:52:53.732 # +promoted-slave slave 172.22.0.10:6379                     ← 提升为新主
+06:52:54.752 * +slave-reconf-done slave 172.22.0.6:6379                   ← 另一从库改指新主
+06:52:54.852 # -odown master mymaster 172.22.0.5 6379
+06:52:54.852 # +failover-end master mymaster 172.22.0.5 6379
+06:52:54.852 # +switch-master mymaster 172.22.0.5 6379 172.22.0.10 6379   ★ 切换完成
+06:52:54.852 * +slave slave 172.22.0.5:6379 @ mymaster 172.22.0.10 6379   ← 原主降为从库
+```
+
+**从 `+sdown` 到 `+switch-master` 用时 2.2 秒。** 三个哨兵都参与了投票，quorum 2/2 达成，原主恢复后正确降级为从库、没有抢回主角色。
 
 ---
 
@@ -372,6 +464,43 @@ command:
 
 多行脚本用 `|` 块保留换行，三行各自独立，连 `&&` 都不需要。
 
+### 7.8 Redis 7.4 + alpine 下哨兵解析 master 主机名失败
+
+哨兵容器一直 `Restarting`，日志是：
+
+```
+>>> 'sentinel monitor mymaster redis-master 6379 2'
+Can't resolve instance hostname.
+1:X # Failed to resolve hostname 'redis-master'
+*** FATAL CONFIG FILE ERROR (Redis 7.4.11) ***
+```
+
+**这个坑难在证据会误导你**：同一个网络里，`redis-slave1/2` 用 `replicaof redis-master 6379` **是能正常连上主库的**（`connected_slaves:2`）。也就是说容器名的 DNS 解析本身没问题，于是会本能地排除 DNS 方向，转去查权限、查配置内容——全是错的。
+
+根因是：**Redis 7.4 的 Sentinel 在加载配置文件阶段就解析 master 主机名**，而 `redis:7-alpine` 用的是 musl libc，它的 `getaddrinfo` 行为与 glibc 有差异，在这个场景下解析失败就直接 FATAL 退出（7.2 及更早版本不做这项检查）。
+
+两种解法：
+
+1. **固定 IP（本仓库采用）** —— compose 用 `ipam` 给 redis-master 分配静态地址，`sentinel.conf` 里写这个 IP：
+
+   ```yaml
+   networks:
+     ha_net:
+       driver: bridge
+       ipam:
+         config:
+           - subnet: 172.28.0.0/16
+   # redis-master:
+   #   networks: { ha_net: { ipv4_address: 172.28.0.10 } }
+   ```
+
+2. **降级镜像** —— 换成 `redis:7.2-alpine`，可以继续用容器名。代价是版本不是最新。
+
+**排查时顺带排除掉的两个方向**（避免重复劳动）：
+
+- 不是文件写权限问题：容器实际以 `uid=0(root)` 运行，`/data`、`/tmp` 都可写
+- 不是认证问题：`auth-pass` 未生效会让哨兵认为主节点不可达，但不会导致进程退出
+
 ---
 
 ## 8. 已知局限
@@ -398,4 +527,6 @@ command:
 
 6. **没有资源限制**，compose 里没设 `mem_limit`。3 个 MySQL 实例已把 `innodb_buffer_pool_size` 压到 64M 以适应 3.7G 内存的机器。
 
-7. **尚未实机验证**。本套配置已按项目二趟平的坑做了对应处理（DNS、镜像源、SELinux），但项目三的验证输出和截图仍待补充（README 中标记 `TODO` 的位置）。
+7. **哨兵配置里写的是固定 IP，不是容器名**。这是为了绕开 Redis 7.4 + alpine 的主机名解析问题（踩坑 7.8），属于兼容性妥协而非最佳实践——哨兵感知 master 的理想方式应该是容器名或 DNS 名称。换用 `redis:7.2-alpine`、或改用 glibc 基础镜像，就可以恢复用容器名。
+
+8. **项目三的截图尚未补进仓库**。`docs/images/` 里目前只有项目二的截图；项目三的四项验证输出已完整记录在本 README 第 6 节，全部是实机运行的原始输出，但没有配套的终端截图。
